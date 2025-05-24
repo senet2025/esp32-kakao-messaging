@@ -150,6 +150,64 @@ void Camera_init_config(){
   }
 }
 
+bool deleteFromSupabase(const String& filename) {
+    HTTPClient http;
+    // Supabase Storage 파일 삭제 REST API 엔드포인트
+    String url = String(SUPABASE_URL) + "/storage/v1/object/esp32imagebox/" + filename;
+    http.begin(url);
+    http.addHeader("Authorization", "Bearer " + String(SUPABASE_ANON_KEY));
+    int httpResponseCode = http.sendRequest("DELETE");
+    String response = http.getString();
+    http.end();
+    Serial.print("Delete response code: ");
+    Serial.println(httpResponseCode);
+    Serial.println(response);
+    return (httpResponseCode == 200 || httpResponseCode == 204);
+    delay(1000); // 1초 대기
+}
+void deleteAllJpgFromSupabase() {
+    HTTPClient http;
+    String url = String(SUPABASE_URL) + "/storage/v1/object/list/esp32imagebox";
+    http.begin(url);
+    http.addHeader("Authorization", "Bearer " + String(SUPABASE_ANON_KEY));
+    http.addHeader("Content-Type", "application/json");
+
+    // prefix를 빈 문자열로 주면 전체 파일 목록 반환
+    String body = "{\"prefix\": \"\"}";
+    int httpResponseCode = http.POST(body);
+    String response = http.getString();
+    http.end();
+
+    if (httpResponseCode == 200) {
+        DynamicJsonDocument doc(8192);
+        DeserializationError error = deserializeJson(doc, response);
+        if (!error && doc.is<JsonArray>()) {
+            int deleted = 0, failed = 0;
+            for (JsonObject obj : doc.as<JsonArray>()) {
+                String name = obj["name"].as<String>();
+                if (name.endsWith(".jpg")) {
+                    Serial.println("Deleting: " + name);
+                    if (deleteFromSupabase(name)) {
+                        deleted++;
+                    } else {
+                        failed++;
+                    }
+                    //delay(1000); // 1초 대기
+                }
+            }
+            Serial.printf("Delete done. Success: %d, Failed: %d\n", deleted, failed);
+        } else {
+            Serial.println("Failed to parse file list JSON.");
+        }
+    } else {
+        Serial.print("Failed to get file list. HTTP code: ");
+        Serial.println(httpResponseCode);
+    }
+}
+
+unsigned long lastTokenFetch = 0;
+const unsigned long tokenFetchInterval = 60UL * 60UL * 1000UL; // 1시간(3600000ms)
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -169,10 +227,11 @@ void setup() {
     // Initialize the camera
     Camera_init_config();
 
-    // access token 동적으로 불러오기
+    // 최초 토큰 세팅
     String token = fetchAccessToken();
     Serial.println("Fetched Kakao access token: " + token);
     kakaoAPI.setAccessToken(token);
+    lastTokenFetch = millis();
 
     // Authenticate with Kakao API
     if (kakaoAPI.authenticate() == true) {
@@ -186,7 +245,15 @@ void setup() {
 }
 
 void loop() {
-    static String message = ""; // Store the message being typed
+    static String message = "";
+
+    // 1시간마다 access token 갱신
+    if (millis() - lastTokenFetch > tokenFetchInterval) {
+        String token = fetchAccessToken();
+        Serial.println("Refreshed Kakao access token: " + token);
+        kakaoAPI.setAccessToken(token);
+        lastTokenFetch = millis();
+    }
 
     // Check if data is available in Serial Monitor
     while (Serial.available() > 0) {
@@ -209,6 +276,37 @@ void loop() {
                     esp_camera_fb_return(fb); // Return the frame buffer
                 }
                 Serial.println("Enter a message to send to Kakao or press '#' + Enter to send an image:");
+            } else if (message == "del *.jpg") {
+                Serial.println("Deleting all jpg files from Supabase...");
+                deleteAllJpgFromSupabase();
+            } else if (message.startsWith("del ")) {
+                String filenames = message.substring(4);
+                filenames.trim();
+                if (filenames.length() > 0) {
+                    int deleted = 0, failed = 0;
+                    // 파일명들을 공백 기준으로 분리
+                    int start = 0;
+                    while (start < filenames.length()) {
+                        int end = filenames.indexOf(' ', start);
+                        if (end == -1) end = filenames.length();
+                        String filename = filenames.substring(start, end);
+                        filename.trim();
+                        if (filename.length() > 0) {
+                            Serial.println("Deleting file from Supabase: " + filename);
+                            if (deleteFromSupabase(filename)) {
+                                Serial.println("File deleted successfully.");
+                                deleted++;
+                            } else {
+                                Serial.println("Failed to delete file.");
+                                failed++;
+                            }
+                        }
+                        start = end + 1;
+                    }
+                    Serial.printf("Delete done. Success: %d, Failed: %d\n", deleted, failed);
+                } else {
+                    Serial.println("No filename specified.");
+                }
             } else if (message.length() > 0) {
                 Serial.print("Sending message: ");
                 Serial.println(message);
