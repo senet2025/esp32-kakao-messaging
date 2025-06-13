@@ -34,7 +34,8 @@ KakaoAPI kakaoAPI;
 
 String fetchAccessToken() {
     HTTPClient http;
-    String tokenUrl = "http://192.168.0.9:8080/kakao_access_token.json";
+    //String tokenUrl = "http://192.168.0.9:8080/kakao_access_token.json";
+    String tokenUrl = "http://senet.iptime.org:8080/kakao_access_token.json";
     http.begin(tokenUrl);
     int httpCode = http.GET();
     String accessToken = "";
@@ -65,7 +66,7 @@ void uploadToSupabase(camera_fb_t *fb) {
 
     if (httpResponseCode == 200 || httpResponseCode == 201) {
         // Supabase public URL 생성
-        String publicUrl = String(SUPABASE_URL) + "/storage/v1/object/public/esp32imagebox/" + filename;
+        String publicUrl = String(SUPABASE_URL) + "/storage/v1/object/public/esp32imagebox/" + filename + "?t=" + String(millis());
         Serial.println("Supabase image URL: " + publicUrl);
 
         // Kakao 메시지로 이미지 URL 전송
@@ -77,6 +78,24 @@ void uploadToSupabase(camera_fb_t *fb) {
         }
     } else {
         Serial.println("Image upload failed, Kakao message not sent.");
+    }
+}
+
+void uploadToRaspberryPi(camera_fb_t *fb) {
+    HTTPClient http;
+    String filename = "esp32cam_" + String(millis()) + ".jpg";
+    //String url = "http://192.168.0.9:8080/upload/" + filename;
+    String url = "http://senet.iptime.org:8080/upload/" + filename;
+    http.begin(url);
+    http.addHeader("Content-Type", "image/jpeg");
+    int httpResponseCode = http.PUT(fb->buf, fb->len);
+    http.end();
+
+    if (httpResponseCode == 200 || httpResponseCode == 201) {
+        //String publicUrl = "http://192.168.0.9:8080/upload/" + filename;
+        String publicUrl = "http://senet.iptime.org:8080/upload/" + filename;
+        String kakaoMsg = "ESP32에서 촬영한 이미지입니다: " + publicUrl;
+        kakaoAPI.sendMessage(kakaoMsg);
     }
 }
 
@@ -173,7 +192,9 @@ void deleteAllJpgFromSupabase() {
     http.addHeader("Content-Type", "application/json");
 
     // prefix를 빈 문자열로 주면 전체 파일 목록 반환
-    String body = "{\"prefix\": \"\"}";
+    // bucketId는 Supabase Storage에서 생성한 버킷 이름
+    // 여기서는 "esp32imagebox"라는 버킷을 사용
+    String body = "{\"prefix\": \"\", \"bucketId\": \"esp32imagebox\"}";
     int httpResponseCode = http.POST(body);
     String response = http.getString();
     http.end();
@@ -267,13 +288,16 @@ void loop() {
             message.trim(); // Remove whitespace
 
             if (message == "#") {
-                Serial.println("\nCapturing image...");
-                camera_fb_t *fb = esp_camera_fb_get(); // Capture the image
-                if (!fb) {
-                    Serial.println("Camera capture failed");
-                } else {
-                    uploadToSupabase(fb);
-                    esp_camera_fb_return(fb); // Return the frame buffer
+                Serial.println("\nCapturing 3 images...");
+                for (int i = 0; i < 3; i++) {
+                    camera_fb_t *fb = esp_camera_fb_get(); // Capture the image
+                    if (!fb) {
+                        Serial.println("Camera capture failed");
+                    } else {
+                        uploadToRaspberryPi(fb); // 업로드 및 Kakao 전송
+                        esp_camera_fb_return(fb);
+                    }
+                    delay(1000); // 1초 간격(필요시 조절)
                 }
                 Serial.println("Enter a message to send to Kakao or press '#' + Enter to send an image:");
             } else if (message == "del *.jpg") {
